@@ -49,7 +49,8 @@ func Detect(deepHW bool) map[string]interface{} {
 func runPowerShell(script string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), psTimeout)
 	defer cancel()
-	return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script).CombinedOutput()
+	utf8Prefix := `[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding; `
+	return exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", utf8Prefix+script).CombinedOutput()
 }
 
 func runPSJSON(script string) interface{} {
@@ -84,19 +85,11 @@ $battery = Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue | Select-
 $bios = Get-CimInstance Win32_BIOS -ErrorAction SilentlyContinue | Select-Object SMBIOSBIOSVersion,ReleaseDate,Manufacturer,SerialNumber
 $board = Get-CimInstance Win32_BaseBoard -ErrorAction SilentlyContinue | Select-Object Product,Manufacturer,SerialNumber
 $gpu = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Select-Object Name,DriverVersion,AdapterRAM,Status
-$peripheralIssues = Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue |
-  Where-Object {
-    $_.ConfigManagerErrorCode -ne 0 -and
-    $_.PNPClass -match 'USB|MEDIA|PRINTER|NET'
-  } |
-  Select-Object Name,PNPClass,ConfigManagerErrorCode,Status
 [pscustomobject]@{
   battery=$battery
   bios=$bios
   baseboard=$board
   gpu=$gpu
-  has_peripheral_issues=($peripheralIssues.Count -gt 0)
-  peripheral_issues=$peripheralIssues
 } | ConvertTo-Json -Depth 6 -Compress
 `
 	base := runPSJSON(script)
@@ -139,20 +132,14 @@ func detectSystemDiagnostics() interface{} {
 	script := `
 $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue | Select-Object LastBootUpTime
 $uptime = if($os.LastBootUpTime){ [int]((Get-Date) - $os.LastBootUpTime).TotalSeconds } else { $null }
-$bugcheck = Get-WinEvent -FilterHashtable @{LogName='System';ID=1001} -MaxEvents 1 -ErrorAction SilentlyContinue | Select-Object TimeCreated,Id,LevelDisplayName,ProviderName,Message
-$sysErrors = Get-WinEvent -FilterHashtable @{LogName='System';Level=2} -MaxEvents 5 -ErrorAction SilentlyContinue | Select-Object TimeCreated,Id,ProviderName,Message
 $startup = Get-CimInstance Win32_StartupCommand -ErrorAction SilentlyContinue | Select-Object Name,Command,Location,User | Select-Object -First 20
-$hotfix = Get-HotFix -ErrorAction SilentlyContinue | Sort-Object InstalledOn -Descending | Select-Object -First 10 HotFixID,Description,InstalledOn
 $activation = Get-CimInstance SoftwareLicensingProduct -ErrorAction SilentlyContinue | Where-Object { $_.PartialProductKey -and $_.Name -match 'Windows' } | Select-Object -First 1 Name,LicenseStatus,Description
 $fw = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control' -Name PEFirmwareType -ErrorAction SilentlyContinue).PEFirmwareType
 $mode = switch($fw){ 1 {'Legacy'} 2 {'UEFI'} default {'Unknown'} }
 [pscustomobject]@{
   last_boot_time=$os.LastBootUpTime
   uptime_seconds=$uptime
-  recent_bugcheck=$bugcheck
-  recent_system_errors=$sysErrors
   startup_items=$startup
-  windows_updates=$hotfix
   activation=$activation
   boot_mode=$mode
 } | ConvertTo-Json -Depth 6 -Compress
@@ -209,12 +196,24 @@ $memTop = Get-Process -ErrorAction SilentlyContinue | Sort-Object WS -Descending
 $cpuNow = Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq '_Total' } | Select-Object -First 1 PercentProcessorTime
 $diskNow = Get-CimInstance Win32_PerfFormattedData_PerfDisk_PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq '_Total' } | Select-Object -First 1 PercentDiskTime
 $osNow = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue | Select-Object -First 1 FreePhysicalMemory
+$gpuTotalBytes = [int64]((Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Measure-Object -Property AdapterRAM -Sum).Sum)
+$gpuUsedBytes = $null
+try {
+  $c = Get-Counter '\\GPU Adapter Memory(*)\\Dedicated Usage' -ErrorAction Stop
+  if($c -and $c.CounterSamples){
+    $gpuUsedBytes = [int64](($c.CounterSamples | Measure-Object -Property CookedValue -Sum).Sum)
+  }
+} catch {}
+$gpuTotalMB = if($gpuTotalBytes -gt 0){ [int]($gpuTotalBytes / 1MB) } else { $null }
+$gpuUsedMB = if($null -ne $gpuUsedBytes){ [int]($gpuUsedBytes / 1MB) } else { $null }
 [pscustomobject]@{
   top_cpu_process_names=$cpuTop
   top_memory_process_names=$memTop
   cpu_percent=([int]$cpuNow.PercentProcessorTime)
   disk_busy_percent=([int]$diskNow.PercentDiskTime)
   memory_available_mb=([int]([int64]$osNow.FreePhysicalMemory / 1024))
+  gpu_memory_total_mb=$gpuTotalMB
+  gpu_memory_used_mb=$gpuUsedMB
 } | ConvertTo-Json -Depth 6 -Compress
 `
 	return runPSJSON(script)
@@ -233,11 +232,7 @@ $soft = @()
 $soft += Get-Soft 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*'
 $soft += Get-Soft 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
 $browsers = @()
-try { $browsers += (& msedge --version 2>$null) } catch {}
-try { $browsers += (& chrome --version 2>$null) } catch {}
-try { $browsers += (& firefox --version 2>$null) } catch {}
 [pscustomobject]@{
-  browsers=$browsers
   installed_software=($soft | Sort-Object DisplayName | Select-Object -First 300)
 } | ConvertTo-Json -Depth 6 -Compress
 `
