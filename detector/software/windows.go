@@ -264,17 +264,43 @@ func detectDotnet() ToolDotnet {
 }
 
 func detectEnv() map[string]string {
-	m := make(map[string]string, 16)
+	m := make(map[string]string, 8)
 
-	envVars := []string{
-		"PATH", "GOROOT", "GOPATH", "JAVA_HOME", "PYTHON_HOME",
-		"NODE_HOME", "DOCKER_HOST", "KUBECONFIG", "HOME", "USERPROFILE",
-		"TEMP", "TMP", "COMSPEC", "SYSTEMROOT", "OS", "PROCESSOR_ARCHITECTURE",
+	// 缁翠慨鍦烘櫙鍙繚鐣欏叧閿幆澧冧俊鎭紝閬垮厤 PATH 鍜屼釜浜哄伐鍏疯矾寰勫櫔澹般€?
+	importantVars := []string{
+		"GOROOT", "GOPATH", "JAVA_HOME", "NODE_HOME", "PYTHON_HOME", "KUBECONFIG", "DOCKER_HOST",
 	}
-
-	for _, v := range envVars {
+	for _, v := range importantVars {
 		if val := os.Getenv(v); val != "" {
 			m[v] = val
+		}
+	}
+
+	if rawPath := os.Getenv("PATH"); rawPath != "" {
+		parts := strings.Split(rawPath, string(os.PathListSeparator))
+		core := make([]string, 0, len(parts))
+		seen := make(map[string]struct{}, len(parts))
+		for _, p := range parts {
+			path := strings.TrimSpace(p)
+			if path == "" {
+				continue
+			}
+			lp := strings.ToLower(path)
+			if strings.Contains(lp, `\windows\system32`) ||
+				strings.Contains(lp, `\windowspowershell\`) ||
+				strings.Contains(lp, `\openssh\`) ||
+				strings.Contains(lp, `\program files\git\cmd`) ||
+				strings.Contains(lp, `\program files\go\bin`) ||
+				strings.Contains(lp, `\program files\nodejs`) ||
+				strings.Contains(lp, `\program files\dotnet`) {
+				if _, ok := seen[lp]; !ok {
+					seen[lp] = struct{}{}
+					core = append(core, path)
+				}
+			}
+		}
+		if len(core) > 0 {
+			m["PATH_CORE"] = strings.Join(core, string(os.PathListSeparator))
 		}
 	}
 
@@ -293,6 +319,18 @@ func detectTopProcesses() []ProcessInfo {
 		return procs
 	}
 
+	systemNoise := map[string]struct{}{
+		"system idle process": {},
+		"system":              {},
+		"secure system":       {},
+		"registry":            {},
+		"smss.exe":            {},
+		"csrss.exe":           {},
+		"wininit.exe":         {},
+		"winlogon.exe":        {},
+		"services.exe":        {},
+	}
+
 	for _, row := range rows {
 		if len(row) < 5 {
 			continue
@@ -300,6 +338,9 @@ func detectTopProcesses() []ProcessInfo {
 		name := strings.TrimSpace(row[0])
 		mem := strings.TrimSpace(row[4])
 		if name == "" {
+			continue
+		}
+		if _, skip := systemNoise[strings.ToLower(name)]; skip {
 			continue
 		}
 		procs = append(procs, ProcessInfo{Name: name, Memory: mem})

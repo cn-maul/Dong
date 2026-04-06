@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"time"
 
+	"dong/detector/advanced"
 	"dong/detector/hardware"
 	"dong/detector/software"
 )
@@ -25,6 +26,7 @@ type Report struct {
 	Runtime   string                   `json:"runtime"`
 	Hardware  map[string]interface{}   `json:"hardware,omitempty"`
 	Software  *software.SoftwareReport `json:"software,omitempty"`
+	Advanced  map[string]interface{}   `json:"advanced,omitempty"`
 }
 
 func main() {
@@ -38,6 +40,8 @@ func main() {
 	network := flag.Bool("network", false, "detect network only")
 	osFlag := flag.Bool("os", false, "detect OS info only")
 	fast := flag.Bool("fast", false, "fast mode: skip expensive software checks")
+	advancedFlag := flag.Bool("advanced", false, "run advanced diagnostics (auto enabled in full scan unless -fast)")
+	deepHW := flag.Bool("deep-hw", false, "deep hardware health scan (SMART/physical disk health)")
 	output := flag.String("o", "", "output to file (under reports/)")
 	pretty := flag.Bool("pretty", false, "pretty print JSON")
 	showVersion := flag.Bool("v", false, "show version")
@@ -66,6 +70,10 @@ func main() {
 	if runAll || *softwareFlag {
 		s := software.Detect(!*fast)
 		result.Software = &s
+	}
+
+	if *advancedFlag || (runAll && !*fast) {
+		result.Advanced = advanced.Detect(*deepHW)
 	}
 
 	if *output != "" {

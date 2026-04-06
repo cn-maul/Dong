@@ -4,15 +4,21 @@
 package hardware
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"net"
+	"os/exec"
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
+
+const mediaDetectTimeout = 6 * time.Second
 
 var (
 	kernel32 = windows.MustLoadDLL("kernel32.dll")
@@ -34,6 +40,11 @@ var (
 	procGetUserNameW    = advapi32.MustFindProc("GetUserNameW")
 	procRtlGetVersion   = ntdll.MustFindProc("RtlGetVersion")
 )
+
+type driveMediaInfo struct {
+	Drive string `json:"drive"`
+	Media string `json:"media"`
+}
 
 func Detect(cpu, memory, disk, network, osFlag bool) map[string]interface{} {
 	result := make(map[string]interface{}, 5)
@@ -158,6 +169,9 @@ func detectMemory() map[string]interface{} {
 	m["total_bytes"] = mem.ullTotalPhys
 	m["available_bytes"] = mem.ullAvailPhys
 	m["used_bytes"] = mem.ullTotalPhys - mem.ullAvailPhys
+	m["total_gb"] = bytesToGB(mem.ullTotalPhys)
+	m["available_gb"] = bytesToGB(mem.ullAvailPhys)
+	m["used_gb"] = bytesToGB(mem.ullTotalPhys - mem.ullAvailPhys)
 	m["memory_load_percent"] = mem.dwMemoryLoad
 
 	return m
@@ -165,6 +179,7 @@ func detectMemory() map[string]interface{} {
 
 func detectDisk() []map[string]interface{} {
 	disks := make([]map[string]interface{}, 0, 8)
+	driveMedia := detectDriveMediaTypes()
 	ret, _, _ := procGetLogicalDrives.Call()
 	logicalDrives := uint32(ret)
 
@@ -193,6 +208,10 @@ func detectDisk() []map[string]interface{} {
 			d["total_bytes"] = totalNumberOfBytes
 			d["free_bytes"] = totalNumberOfFreeBytes
 			d["used_bytes"] = totalNumberOfBytes - totalNumberOfFreeBytes
+			d["total_gb"] = bytesToGB(totalNumberOfBytes)
+			d["free_gb"] = bytesToGB(totalNumberOfFreeBytes)
+			d["used_gb"] = bytesToGB(totalNumberOfBytes - totalNumberOfFreeBytes)
+			d["disk_type"] = normalizeDiskType(driveMedia[drive])
 
 			// 获取文件系统
 			var volumeName [256]uint16
@@ -206,6 +225,95 @@ func detectDisk() []map[string]interface{} {
 	}
 
 	return disks
+}
+
+func bytesToGB(v uint64) float64 {
+	gb := float64(v) / (1024 * 1024 * 1024)
+	return float64(int(gb*10+0.5)) / 10
+}
+
+func normalizeDiskType(raw string) string {
+	r := strings.ToUpper(strings.TrimSpace(raw))
+	switch {
+	case strings.Contains(r, "SSD"), strings.Contains(r, "NVME"), r == "17":
+		return "SSD"
+	case strings.Contains(r, "HDD"):
+		return "HDD"
+	default:
+		return "Unknown"
+	}
+}
+
+func detectDriveMediaTypes() map[string]string {
+	out := make(map[string]string)
+	script := `$items = Get-Partition -ErrorAction SilentlyContinue |
+  Where-Object { $_.DriveLetter } |
+  ForEach-Object {
+    $p = $_
+    $d = Get-Disk -Number $p.DiskNumber -ErrorAction SilentlyContinue
+    $media = if($d -and $d.MediaType){ $d.MediaType.ToString() } else { "Unknown" }
+    if($media -eq "Unspecified" -or $media -eq "Unknown" -or [string]::IsNullOrWhiteSpace($media)){
+      $pd = Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { $_.DeviceId -eq $p.DiskNumber } | Select-Object -First 1
+      if($pd -and $pd.MediaType){
+        $media = $pd.MediaType.ToString()
+      }
+      if(($media -eq "Unspecified" -or $media -eq "Unknown" -or [string]::IsNullOrWhiteSpace($media)) -and $pd){
+        if($null -ne $pd.SpindleSpeed){
+          if([int64]$pd.SpindleSpeed -gt 0){ $media = "HDD" } else { $media = "SSD" }
+        }
+      }
+    }
+    if($media -eq "Unspecified" -or $media -eq "Unknown" -or [string]::IsNullOrWhiteSpace($media)){
+      $name = ""
+      if($d -and $d.FriendlyName){ $name = $d.FriendlyName }
+      $bus = ""
+      if($d -and $d.BusType){ $bus = $d.BusType.ToString() }
+      if($bus -match "NVMe" -or $bus -eq "17"){ $media = "SSD" }
+      elseif($name -match "SSD|NVME|M\\.2"){ $media = "SSD" }
+      elseif($name -match "HDD|SATA"){ $media = "HDD" }
+      else { $media = "Unknown" }
+    }
+    if(($media -eq "Unspecified" -or $media -eq "Unknown" -or [string]::IsNullOrWhiteSpace($media)) -and $d -and $d.BusType){
+      $media = $d.BusType.ToString()
+    }
+    [pscustomobject]@{
+      drive = "$($p.DriveLetter):"
+      media = $media
+    }
+  }
+$items | ConvertTo-Json -Compress`
+
+	ctx, cancel := context.WithTimeout(context.Background(), mediaDetectTimeout)
+	defer cancel()
+	b, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script).CombinedOutput()
+	if err != nil {
+		return out
+	}
+
+	raw := strings.TrimSpace(string(b))
+	if raw == "" {
+		return out
+	}
+
+	var arr []driveMediaInfo
+	if strings.HasPrefix(raw, "{") {
+		var one driveMediaInfo
+		if err := json.Unmarshal([]byte(raw), &one); err == nil && one.Drive != "" {
+			out[strings.ToUpper(strings.TrimSpace(one.Drive))] = one.Media
+		}
+		return out
+	}
+	if err := json.Unmarshal([]byte(raw), &arr); err != nil {
+		return out
+	}
+	for _, it := range arr {
+		drive := strings.ToUpper(strings.TrimSpace(it.Drive))
+		if drive == "" {
+			continue
+		}
+		out[drive] = it.Media
+	}
+	return out
 }
 
 func detectNetwork() []map[string]interface{} {

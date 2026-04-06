@@ -11,6 +11,7 @@
 - 性能模式：
   - 默认全量模式（更完整）
   - `-fast` 快扫模式（跳过较慢的软件深度检测）
+  - `-advanced` 进阶诊断（系统故障、驱动、网络连通、软件清单等）
 
 ## 运行要求
 
@@ -52,6 +53,8 @@ go build -trimpath -ldflags "-s -w -buildid=" -o dong.exe ./cmd
 | `-network` | 仅检测网络 |
 | `-os` | 仅检测操作系统信息 |
 | `-fast` | 快速模式：跳过较慢的软件深度检查（如 Docker 运行状态深度检测） |
+| `-advanced` | 执行进阶诊断（默认在 `-all` 且未开启 `-fast` 时自动执行） |
+| `-deep-hw` | 深度硬件健康检测（SMART/PhysicalDisk 健康） |
 | `-o <文件名>` | 输出到文件（默认目录 `reports/`） |
 | `-pretty` | 以格式化 JSON 输出 |
 | `-v` | 显示版本 |
@@ -68,6 +71,24 @@ go build -trimpath -ldflags "-s -w -buildid=" -o dong.exe ./cmd
 
 ```powershell
 .\dong.exe -all -fast -pretty
+```
+
+### 全量 + 进阶诊断（默认全扫会自动包含）
+
+```powershell
+.\dong.exe -all -pretty
+```
+
+也可以显式指定：
+
+```powershell
+.\dong.exe -advanced -pretty
+```
+
+### 深度硬件健康（建议排查硬盘问题时开启）
+
+```powershell
+.\dong.exe -all -advanced -deep-hw -pretty
 ```
 
 ### 仅软件环境检测
@@ -107,6 +128,7 @@ $env:DONG_REPORTS_DIR="D:\DongReports"
 - `runtime`：运行平台（如 `windows/amd64`）
 - `hardware`：硬件检测结果
 - `software`：软件环境检测结果
+- `advanced`：进阶诊断结果（全扫自动启用）
 
 `hardware` 常见子字段：
 
