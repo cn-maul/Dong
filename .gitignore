@@ -1,0 +1,30 @@
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Build outputs
+dist/
+bin/
+build/
+dong
+dong-web
+
+# Runtime outputs
+reports/
+*.log
+*.out
+
+# Go test/cache artifacts
+*.test
+*.prof
+coverage.out
+
+# IDE/editor
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db

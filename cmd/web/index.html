@@ -1,0 +1,48 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>洞玄</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <h1>洞玄</h1>
+        <p>洞烛虚妄，玄辨真伪</p>
+      </div>
+      <nav id="nav" class="nav">
+        <button data-page="overview" class="active">总览</button>
+        <button data-page="hardware">硬件信息</button>
+        <button data-page="software">软件信息</button>
+        <button data-page="advanced">进阶诊断</button>
+        <button data-page="raw">原始 JSON</button>
+      </nav>
+      <div class="side-actions">
+        <button id="refreshBtn">刷新数据</button>
+        <button id="reloadBtn" class="ghost">刷新页面</button>
+      </div>
+    </aside>
+
+    <main class="content">
+      <header class="topbar">
+        <h2 id="pageTitle">总览</h2>
+        <p id="meta">加载中...</p>
+        <p id="refreshStatus" class="refresh-status">数据状态：未刷新</p>
+      </header>
+      <section id="pageBody" class="page-body"></section>
+    </main>
+  </div>
+
+  <template id="kvTpl">
+    <div class="kv-row">
+      <div class="k"></div>
+      <div class="v"></div>
+    </div>
+  </template>
+
+  <script src="app.js"></script>
+</body>
+</html>
